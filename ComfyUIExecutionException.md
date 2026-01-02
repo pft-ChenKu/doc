@@ -24,7 +24,15 @@ ComfyUI 執行錯誤的例外類別,當 workflow 執行過程中發生錯誤時�
   }
 }
 ```
-
+輸出範例
+```
+Error Message: No face detected
+Error Code: /workspace/ComfyUI/custom_nodes/ComfyUI_PF_facefusion.faceless.nodes.nodes_face_swap2.NoFaceError
+Error Type: 0
+Error Node Class: NodesFaceDetector
+Error Node ID: 1
+Error Metadata: {'title': 'targetface'}
+```
 錯誤處理範例程式碼：
 
 ```python
