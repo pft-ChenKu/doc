@@ -305,12 +305,10 @@ class HierarchicalCache_WhiteList:
 ### 修改前
 - **VRAM 使用**: 70.35 GB（峰值）
 - **警告訊息**: "Torch already imported"
-- **Prestartup 時間**: 4.3 秒
 
 ### 修改後
 - **VRAM 使用**: ~58 GB（預期正常值）
 - **警告訊息**: 無
-- **Prestartup 時間**: <0.1 秒（幾乎無延遲）
 - **VRAM 節省**: **10-12 GB** (17-20%)
 
 ## 技術重點
