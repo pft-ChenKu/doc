@@ -1,6 +1,6 @@
 # ComfyUI VRAM 用量異常問題
 
-## 問題摘要
+## 問題
 在 ComfyUI 自定義節點中使用 Prestartup Script 進行 monkey patching 時，發現 VRAM 用量異常增加 **10-12 GB**（從 58 GB 增加到 70 GB，增幅約 17-20%）。
 
 ## 環境資訊
@@ -11,8 +11,6 @@
 - **記憶體模式**: HIGH_VRAM
 
 ## 問題分析
-
-### 根本原因
 在 `prestartup_script.py` 中提前 import 包含 PyTorch 依賴的模組，導致 PyTorch CUDA allocator 在錯誤的時機點初始化，影響記憶體配置策略。
 
 ### 問題觸發流程
@@ -24,14 +22,160 @@
 5. PyTorch CUDA allocator 提前初始化（在 ComfyUI 正式啟動前）
 6. 導致記憶體配置策略異常，多佔用 10-12 GB VRAM
 ```
+### ComfyUI 的檢查機制
 
+```python
+if 'torch' in sys.modules:
+    logging.warning("WARNING: Potential Error in code: Torch already imported, "
+                   "torch should never be imported before this point.")
+```
+
+這個檢查會在 ComfyUI 準備好環境後，驗證 torch 是否已被提前載入：
+- 如果 `torch` 在 `sys.modules` 中表示已被 import
+- 觸發警告，提醒開發者有程式碼違反了 import 順序規則
+- 此時 `PYTORCH_CUDA_ALLOC_CONF` 設定已無效，導致 VRAM 使用異常
 ### 關鍵警告訊息
 ```log
-WARNING: Potential Error in code: Torch already imported, 
-torch should never be imported before this point.
+WARNING: Potential Error in code: Torch already imported, torch should never be imported before this point.
 ```
 
 此警告出現在 ComfyUI 正式啟動時，表明 PyTorch 已在 prestartup 階段被提前載入。
+
+### ComfyUI 啟動順序說明
+
+理解 ComfyUI 的啟動順序是解決此問題的關鍵：
+
+```
+1. Prestartup 階段（prestartup_script.py）
+   ├─ 執行時機：ComfyUI 核心初始化之前
+   ├─ 目的：預先載入自定義配置、monkey patching
+   └─ 此時 import torch → 觸發警告 + VRAM 異常
+   
+2. ComfyUI 核心初始化
+   ├─ 設定 CUDA 環境變數
+   ├─ 初始化 comfy.model_management
+   ├─ 配置 PyTorch CUDA allocator
+   └─ 準備接受 torch import
+   
+3. Custom Nodes 載入（__init__.py）
+   ├─ 執行時機：ComfyUI 已完成初始化
+   ├─ 載入自定義節點類別
+   └─ 此時 import torch → 安全，不會觸發警告
+   
+4. ComfyUI 正式啟動
+   └─ 開始提供服務
+```
+
+**關鍵差異：**
+- **Prestartup 階段**：ComfyUI 還未準備好，此時 import torch 會導致 PyTorch 自行初始化 CUDA allocator，與 ComfyUI 的配置衝突
+- **Custom Nodes 階段**：ComfyUI 已完成初始化，此時 import torch 是安全的，會使用 ComfyUI 預先配置好的環境
+
+**實際 Log 驗證：**
+```log
+[PF Prestart] All prestart applied successfully!    # ← Prestartup 完成
+Prestartup times: 3.3 seconds
+
+Total VRAM 143156 MB, total RAM 515596 MB           # ← ComfyUI 初始化
+pytorch version: 2.5.1
+Set vram state to: HIGH_VRAM
+Device: cuda:0 NVIDIA H200 NVL : native              # ← CUDA 環境已設定
+
+[ComfyUI_PF_essentials] torch.cuda.current_device() # ← __init__.py 執行（此時安全）
+Import times for custom nodes: ...                  # ← Custom nodes 載入
+```
+## ComfyUI 對 PyTorch Import 時機的控制機制
+
+### 為什麼 Prestartup 階段不能 import torch？
+
+ComfyUI 在 `main.py` 中實施了嚴格的 import 順序控制，確保在載入 PyTorch 之前先設定所有必要的環境變數和 CUDA 配置。
+
+#### 關鍵code位置
+
+**`main.py` (第 130-148 行):**
+```python
+# 1. 先設定 CUDA 環境變數
+if args.cuda_device is not None:
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.cuda_device)
+    os.environ['HIP_VISIBLE_DEVICES'] = str(args.cuda_device)
+    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = str(args.cuda_device)
+
+if args.deterministic:
+    if 'CUBLAS_WORKSPACE_CONFIG' not in os.environ:
+        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ":4096:8"
+
+# 2. 載入 cuda_malloc 設定（設定 PYTORCH_CUDA_ALLOC_CONF）
+import cuda_malloc
+
+# 3. 檢查 torch 是否已被提前載入
+if 'torch' in sys.modules:
+    logging.warning("WARNING: Potential Error in code: Torch already imported, "
+                   "torch should never be imported before this point.")
+
+# 4. 此時才正式 import torch 相關模組
+import comfy.utils
+import execution
+import comfy.model_management
+```
+
+#### CUDA Memory Allocator 設定機制
+
+**`cuda_malloc.py` (第 85-93 行):**
+```python
+if args.cuda_malloc and not args.disable_cuda_malloc:
+    env_var = os.environ.get('PYTORCH_CUDA_ALLOC_CONF', None)
+    if env_var is None:
+        env_var = "backend:cudaMallocAsync"
+    else:
+        env_var += ",backend:cudaMallocAsync"
+    
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = env_var
+```
+
+### 為什麼會影響 VRAM 使用？
+
+PyTorch 的 CUDA allocator 會在**第一次 import torch 時**讀取 `PYTORCH_CUDA_ALLOC_CONF` 環境變數來決定記憶體管理策略：
+
+1. **正確時機（ComfyUI 控制）:**
+   ```
+   設定 PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync
+   → import torch
+   → PyTorch 使用 cudaMallocAsync allocator
+   → 高效的記憶體管理，VRAM ~58 GB
+   ```
+
+2. **錯誤時機（Prestartup 提前 import）:**
+   ```
+   import torch（在 prestartup 階段）
+   → PyTorch 使用預設 allocator（未設定 PYTORCH_CUDA_ALLOC_CONF）
+   → 後續 ComfyUI 設定的環境變數無效（已初始化）
+   → 低效的記憶體管理，VRAM ~70 GB (+12 GB)
+   ```
+
+### PyTorch CUDA Allocator 初始化特性
+
+PyTorch 的 CUDA allocator 有以下特性：
+
+1. **單次初始化**: 第一次 import torch 時初始化，之後無法更改
+2. **環境變數依賴**: 只在初始化時讀取 `PYTORCH_CUDA_ALLOC_CONF`
+3. **全局影響**: allocator 策略影響整個 Python 進程的 CUDA 記憶體管理
+
+**相關文檔:**
+- [PyTorch CUDA Semantics - Memory Management](https://pytorch.org/docs/stable/notes/cuda.html#memory-management)
+- [cudaMallocAsync Allocator](https://pytorch.org/docs/stable/notes/cuda.html#cudasync-allocator)
+### 為什麼 `__init__.py` 中的 import torch 不會觸發問題？
+
+這是因為執行時機不同：
+
+| 階段 | 執行時機 | import torch 結果 | VRAM 影響 |
+|------|---------|------------------|----------|
+| **prestartup_script.py** | ComfyUI 初始化**之前** |  **觸發警告**<br>PyTorch 自行初始化 CUDA allocator | +10-12 GB |
+| **`__init__.py`** | ComfyUI 初始化**之後** |  **正常運作**<br>使用 ComfyUI 預設的 CUDA 配置 | 正常 |
+
+**結論：**
+- Prestartup 階段必須避免任何直接或間接的 torch import
+- Custom nodes 的 `__init__.py` 可以安全地 import torch
+- 使用 import hook 是在 prestartup 階段進行 monkey patching 的最佳實踐
+- 
 
 ## 解決方案
 
@@ -188,9 +332,7 @@ class HierarchicalCache_WhiteList:
 - 使用 `__class__.__bases__` 動態設置父類
 - 在 `__init__` 階段才完成類別繼承關係
 
-## 適用場景
 
-此解決方案適用於所有需要在 ComfyUI prestartup 階段進行 monkey patching，但目標模組或依賴鏈中包含 PyTorch/CUDA 相關 import 的情況。
 
 ### 關鍵原則
 1. **絕不在 prestartup 階段 import torch**
@@ -210,14 +352,50 @@ class HierarchicalCache_WhiteList:
 
 ## 故障排除
 
-### 如何檢查問題是否存在
+### 檢查問題是否存在
 1. 查看啟動 log 是否有 "Torch already imported" 警告
 2. 使用 `nvidia-smi` 或 `torch.cuda.memory_allocated()` 監控 VRAM 使用
 3. 比較 classic cache 與 whitelist cache 的 VRAM 差異
 
-### 如何驗證修復
+### 驗證修復
 1. 確認啟動 log 無 "Torch already imported" 警告
 2. VRAM 使用回到預期水平（約 58 GB）
 3. Prestartup 時間大幅減少（<0.1 秒）
 4. 功能正常運作（cache whitelist 生效）
+
+## 總結
+
+透過 Import Hook 機制，成功將 monkey patching 延遲到 ComfyUI 正式啟動後執行，避免 PyTorch 提前初始化導致的 VRAM 配置異常，節省 **10-12 GB VRAM**（約 17-20%），且不影響功能正常運作。
+
+這個解決方案展示了在受限環境下（無法修改 ComfyUI 源碼）進行深度系統整合時，如何透過 Python 高級特性（import hook、動態繼承）來解決複雜的初始化順序問題。
+
+
+
+
+
+### 解決方案的原理
+
+使用 import hook 延遲所有會觸發 torch import 的模組：
+
+```python
+# Prestartup 階段：只註冊 hook，不 import 任何東西
+sys.meta_path.insert(0, ExecutionPatcher())
+sys.meta_path.insert(0, ModelPatcherPatcher())
+
+# ComfyUI 啟動階段：
+# 1. main.py 設定 PYTORCH_CUDA_ALLOC_CONF
+# 2. main.py import execution → ExecutionPatcher 攔截 → 執行 monkey patch
+# 3. 此時才 import comfy_execution.caching → 觸發 torch import
+# 4. PyTorch 使用正確的 CUDA allocator 設定
+```
+
+這樣確保：
+- Prestartup 階段完全不觸發 torch import
+- 所有 torch 相關的 import 都在 ComfyUI 設定好環境之後
+- CUDA allocator 使用正確的配置（cudaMallocAsync）
+- VRAM 使用回到正常水平
+
+
+
+
 
