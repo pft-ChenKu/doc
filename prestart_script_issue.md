@@ -300,16 +300,6 @@ class HierarchicalCache_WhiteList:
         self.whitelist = set(whitelist) if whitelist else set()
 ```
 
-## 驗證結果
-
-### 修改前
-- **VRAM 使用**: 70.35 GB（峰值）
-- **警告訊息**: "Torch already imported"
-
-### 修改後
-- **VRAM 使用**: ~58 GB（預期正常值）
-- **警告訊息**: 無
-- **VRAM 節省**: **10-12 GB** (17-20%)
 
 ## 技術重點
 
@@ -338,28 +328,6 @@ class HierarchicalCache_WhiteList:
 3. **在 `__init__` 或函數內部進行延遲 import**
 4. **避免頂層 import 任何會連鎖觸發 torch 的模組**
 
-## 相關檔案
-
-### 修改的檔案
-1. `prestartup_script.py` - 使用 import hook 機制
-2. `scripts/comfyui_classic_cache_white_list.py` - 延遲 import 到 `__init__`
-3. `scripts/comfyui_classic_caching.py` - 最簡化版本，只保留 `HierarchicalCache_WhiteList`
-
-### 保持不變的檔案
-- `scripts/comfyui_lora_cache_policy.py` - 完整保留（1491 行），但透過 import hook 延遲載入
-
-## 故障排除
-
-### 檢查問題是否存在
-1. 查看啟動 log 是否有 "Torch already imported" 警告
-2. 使用 `nvidia-smi` 或 `torch.cuda.memory_allocated()` 監控 VRAM 使用
-3. 比較 classic cache 與 whitelist cache 的 VRAM 差異
-
-### 驗證修復
-1. 確認啟動 log 無 "Torch already imported" 警告
-2. VRAM 使用回到預期水平（約 58 GB）
-3. Prestartup 時間大幅減少（<0.1 秒）
-4. 功能正常運作（cache whitelist 生效）
 
 ## 總結
 
