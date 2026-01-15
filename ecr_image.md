@@ -14,7 +14,7 @@ aws configure
 
 # login aws ecr
 # the server "073012653937.dkr.ecr.us-west-2.amazonaws.com" is defined by server team 成功會出現 Login Succeeded
-aws ecr get-login-password --region us-west-2  docker login --username AWS --password-stdin 690946208568.dkr.ecr.us-west-2.amazonaws.com
+aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin 690946208568.dkr.ecr.us-west-2.amazonaws.com
 
 # docker pull images (ex: pull ginza six image)
 docker pull 690946208568.dkr.ecr.us-west-2.amazonaws.com/yce/ai/apt-22:ginza_six_20260101
