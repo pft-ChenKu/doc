@@ -12,10 +12,8 @@
 
 ```json
 {
-  "session_id": "session-id",
+  "session_id": "xxxxx",
   "effect": "automv",
-  "tskId": "task-id-16-chars",
-  "dstKeys": [],
   "acts": [{
     "id": 0,
     "params": {
@@ -48,8 +46,6 @@
 |-----|------|-----|------|
 | `session_id` | string | ✅ | 會話 ID，用於標識用戶會話 |
 | `effect` | string | ✅ | 固定為 "automv" |
-| `tskId` | string | ✅ | 任務 ID（16字元，基於任務內容的 SHA256） |
-| `dstKeys` | array | ✅ | 目標鍵值（通常為空陣列） |
 | `acts` | array | ✅ | 動作陣列，包含任務參數 |
 | `acts[0].id` | number | ✅ | 動作 ID，固定為 0 |
 | `acts[0].params` | object | ✅ | 任務參數物件 |
@@ -953,8 +949,6 @@ Response: {
   "payload": {  // 完整的 payload 結構
     "session_id": "session-id",
     "effect": "automv",
-    "tskId": "task-id",
-    "dstKeys": [],
     "acts": [{
       "id": 0,
       "params": {
